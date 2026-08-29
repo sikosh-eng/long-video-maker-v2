@@ -1,8 +1,10 @@
 name: long_video_maker
-description: Automatic video editor for Android
+
+description: Automatic long video and shorts maker
+
 publish_to: "none"
 
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -10,15 +12,21 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
   cupertino_icons: ^1.0.8
+
   image_picker: ^1.2.3
+
   file_picker: ^10.3.2
+
   path_provider: ^2.1.5
+
   ffmpeg_kit_flutter_new: ^4.6.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^6.0.0
 
 flutter:
