@@ -2,43 +2,35 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
 
-      - name: Check Flutter
-        run: flutter --version
-
-      - name: Create Android platform
-        run: flutter create --platforms=android .
+      - name: Create Flutter Android project
+        run: |
+          flutter create . --platforms=android --org com.sikosh.longvideomaker
 
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Analyze project
-        run: flutter analyze
-
-      - name: Build release APK
+      - name: Build APK
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: long-video-maker-apk
+          name: long-video-maker
           path: build/app/outputs/flutter-apk/app-release.apk
