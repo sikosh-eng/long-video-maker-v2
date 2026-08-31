@@ -1,11 +1,9 @@
-import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 
 void main() {
   runApp(const LongVideoMakerApp());
@@ -21,465 +19,507 @@ class LongVideoMakerApp extends StatelessWidget {
       title: 'Long Video Maker',
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0D0F14),
+        scaffoldBackgroundColor: const Color(0xFF0D1117),
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.deepPurple,
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
       ),
-      home: const EditorPage(),
+      home: const HomePage(),
     );
   }
 }
 
-class EditorPage extends StatefulWidget {
-  const EditorPage({super.key});
+class ProjectImage {
+  final XFile file;
+  String description;
+  int originalIndex;
 
-  @override
-  State<EditorPage> createState() => _EditorPageState();
+  ProjectImage({
+    required this.file,
+    this.description = '',
+    required this.originalIndex,
+  });
 }
 
-class _EditorPageState extends State<EditorPage> {
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
   final ImagePicker _picker = ImagePicker();
 
-  List<XFile> images = [];
-  String? voicePath;
-  String? musicPath;
+  final TextEditingController _apiKeyController = TextEditingController();
+  final TextEditingController _scriptController = TextEditingController();
+
+  List<ProjectImage> images = [];
+
+  bool aiSorting = false;
+  bool showApiKey = false;
 
   String aspectRatio = '16:9';
   String resolution = '1080p';
-  int fps = 30;
+  String fps = '30';
+  String sortMode = 'AI';
 
-  bool exporting = false;
-  double progress = 0;
-  String status = 'Готово к работе';
+  double imageDuration = 4.0;
 
-  final Map<String, String> resolutions = {
-    '720p': '1280:720',
-    '1080p': '1920:1080',
-    '1440p': '2560:1440',
-    '4K': '3840:2160',
-  };
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    _scriptController.dispose();
+    super.dispose();
+  }
 
   Future<void> pickImages() async {
     try {
-      final List<XFile> picked = await _picker.pickMultiImage(
-        imageQuality: 95,
+      final picked = await _picker.pickMultiImage(
+        imageQuality: 80,
       );
 
-      if (picked.isNotEmpty) {
-        setState(() {
-          images = picked;
-          status = 'Выбрано изображений: ${images.length}';
-        });
-      }
+      if (picked.isEmpty) return;
+
+      setState(() {
+        for (final file in picked) {
+          images.add(
+            ProjectImage(
+              file: file,
+              originalIndex: images.length,
+            ),
+          );
+        }
+      });
     } catch (e) {
-      showError('Не удалось открыть галерею: $e');
+      showMessage('Ошибка выбора изображений: $e');
     }
   }
 
-  Future<void> pickVoice() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: [
-          'mp3',
-          'wav',
-          'm4a',
-          'aac',
-          'ogg',
-          'flac',
+  void clearImages() {
+    setState(() {
+      images.clear();
+    });
+  }
+
+  void shuffleImages() {
+    if (images.length < 2) return;
+
+    final copy = List<ProjectImage>.from(images);
+    copy.shuffle();
+
+    setState(() {
+      images = copy;
+    });
+  }
+
+  Future<String> analyzeImage(
+    ProjectImage image,
+    int index,
+  ) async {
+    final apiKey = _apiKeyController.text.trim();
+
+    if (apiKey.isEmpty) {
+      throw Exception('Введите OpenAI API key');
+    }
+
+    final Uint8List bytes = await image.file.readAsBytes();
+
+    final base64Image = base64Encode(bytes);
+
+    String mimeType = 'image/jpeg';
+
+    final name = image.file.name.toLowerCase();
+
+    if (name.endsWith('.png')) {
+      mimeType = 'image/png';
+    } else if (name.endsWith('.webp')) {
+      mimeType = 'image/webp';
+    } else if (name.endsWith('.gif')) {
+      mimeType = 'image/gif';
+    }
+
+    final fileName = image.file.name;
+
+    final prompt = '''
+Analyze this image for a video editing application.
+
+Image number: $index
+File name: $fileName
+
+Describe:
+1. What is visible?
+2. What is happening?
+3. Is this an establishing/before/process/result scene?
+4. What stage of a story could this image represent?
+
+Return ONLY one concise description in English.
+Maximum 40 words.
+''';
+
+    final response = await http.post(
+      Uri.parse('https://api.openai.com/v1/responses'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $apiKey',
+      },
+      body: jsonEncode({
+        'model': 'gpt-5',
+        'input': [
+          {
+            'role': 'user',
+            'content': [
+              {
+                'type': 'input_text',
+                'text': prompt,
+              },
+              {
+                'type': 'input_image',
+                'image_url': 'data:$mimeType;base64,$base64Image',
+                'detail': 'low',
+              },
+            ],
+          },
         ],
-      );
+      }),
+    );
 
-      if (result != null && result.files.single.path != null) {
-        setState(() {
-          voicePath = result.files.single.path!;
-          status = 'Озвучка добавлена';
-        });
-      }
-    } catch (e) {
-      showError('Не удалось выбрать озвучку: $e');
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'AI error ${response.statusCode}: ${response.body}',
+      );
     }
+
+    final data = jsonDecode(response.body);
+
+    final text = extractOutputText(data);
+
+    if (text.isEmpty) {
+      throw Exception('AI не вернул описание изображения');
+    }
+
+    return text.trim();
   }
 
-  Future<void> pickMusic() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: [
-          'mp3',
-          'wav',
-          'm4a',
-          'aac',
-          'ogg',
-          'flac',
-        ],
-      );
+  String extractOutputText(dynamic data) {
+    final List<String> texts = [];
 
-      if (result != null && result.files.single.path != null) {
-        setState(() {
-          musicPath = result.files.single.path!;
-          status = 'Музыка добавлена';
-        });
-      }
-    } catch (e) {
-      showError('Не удалось выбрать музыку: $e');
-    }
-  }
+    void walk(dynamic value) {
+      if (value is Map) {
+        if (value['type'] == 'output_text' &&
+            value['text'] is String) {
+          texts.add(value['text']);
+        }
 
-  Future<double> getAudioDuration(String path) async {
-    try {
-      final session = await FFprobeKit.getMediaInformation(path);
-      final information = session.getMediaInformation();
-
-      if (information != null) {
-        final durationString = information.getDuration();
-
-        if (durationString != null) {
-          return double.tryParse(durationString) ?? 0;
+        for (final item in value.values) {
+          walk(item);
+        }
+      } else if (value is List) {
+        for (final item in value) {
+          walk(item);
         }
       }
-    } catch (_) {}
+    }
 
-    return 0;
+    walk(data);
+
+    return texts.join('\n').trim();
   }
 
-  String getVideoSize() {
-    if (aspectRatio == '9:16') {
-      switch (resolution) {
-        case '720p':
-          return '720:1280';
-        case '1080p':
-          return '1080:1920';
-        case '1440p':
-          return '1440:2560';
-        case '4K':
-          return '2160:3840';
+  Future<List<int>> getAiOrder() async {
+    final apiKey = _apiKeyController.text.trim();
+
+    if (apiKey.isEmpty) {
+      throw Exception('Введите OpenAI API key');
+    }
+
+    final descriptions = <String>[];
+
+    for (int i = 0; i < images.length; i++) {
+      descriptions.add(
+        'IMAGE_ID=$i | FILE=${images[i].file.name} | DESCRIPTION=${images[i].description}',
+      );
+    }
+
+    final script = _scriptController.text.trim();
+
+    final prompt = '''
+You are an expert video editor.
+
+I have a collection of images that are currently in random order.
+
+Your task is to create the best chronological/story order.
+
+VIDEO TYPE:
+Long-form YouTube video.
+
+ASPECT RATIO:
+$aspectRatio
+
+SCRIPT:
+${script.isEmpty ? 'No script was provided.' : script}
+
+IMAGES:
+${descriptions.join('\n')}
+
+Rules:
+- Use every image exactly once.
+- Do not invent image IDs.
+- Return ONLY a JSON array of integer IMAGE_ID values.
+- The first image should normally establish the scene or beginning.
+- Process images should follow logically.
+- Result/final images should normally be near the end.
+- If a script exists, match the images to the script.
+- Do not explain anything.
+- Example:
+[3,0,7,2,1,5,4,6]
+''';
+
+    final response = await http.post(
+      Uri.parse('https://api.openai.com/v1/responses'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $apiKey',
+      },
+      body: jsonEncode({
+        'model': 'gpt-5',
+        'input': prompt,
+      }),
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(
+        'AI sorting error ${response.statusCode}: ${response.body}',
+      );
+    }
+
+    final data = jsonDecode(response.body);
+    final text = extractOutputText(data);
+
+    final start = text.indexOf('[');
+    final end = text.lastIndexOf(']');
+
+    if (start == -1 || end == -1 || end <= start) {
+      throw Exception('AI вернул неправильный порядок');
+    }
+
+    final jsonPart = text.substring(start, end + 1);
+
+    final decoded = jsonDecode(jsonPart);
+
+    if (decoded is! List) {
+      throw Exception('Неверный формат AI ответа');
+    }
+
+    final result = <int>[];
+
+    for (final item in decoded) {
+      if (item is int &&
+          item >= 0 &&
+          item < images.length &&
+          !result.contains(item)) {
+        result.add(item);
       }
     }
 
-    if (aspectRatio == '1:1') {
-      switch (resolution) {
-        case '720p':
-          return '720:720';
-        case '1080p':
-          return '1080:1080';
-        case '1440p':
-          return '1440:1440';
-        case '4K':
-          return '2160:2160';
+    for (int i = 0; i < images.length; i++) {
+      if (!result.contains(i)) {
+        result.add(i);
       }
     }
 
-    return resolutions[resolution] ?? '1920:1080';
+    return result;
   }
 
-  Future<void> exportVideo() async {
-    if (images.isEmpty) {
-      showError('Сначала добавь изображения');
+  Future<void> aiSort() async {
+    if (images.length < 2) {
+      showMessage('Добавь минимум 2 изображения');
       return;
     }
 
-    if (voicePath == null) {
-      showError('Сначала добавь озвучку');
+    if (_apiKeyController.text.trim().isEmpty) {
+      showMessage('Сначала введи OpenAI API key');
       return;
     }
 
     setState(() {
-      exporting = true;
-      progress = 0.05;
-      status = 'Подготавливаем видео...';
+      aiSorting = true;
     });
 
     try {
-      final directory = await getTemporaryDirectory();
-
-      final workDirectory = Directory(
-        '${directory.path}/long_video_work',
-      );
-
-      if (await workDirectory.exists()) {
-        await workDirectory.delete(recursive: true);
-      }
-
-      await workDirectory.create(recursive: true);
-
-      final voiceDuration = await getAudioDuration(voicePath!);
-
-      if (voiceDuration <= 0) {
-        throw Exception('Не удалось определить длину озвучки');
-      }
-
-      final secondsPerImage = voiceDuration / images.length;
-
-      setState(() {
-        progress = 0.15;
-        status =
-            'Длина озвучки: ${voiceDuration.toStringAsFixed(1)} сек.';
-      });
-
-      final List<String> imageFiles = [];
-
+      // Сначала AI анализирует изображения.
       for (int i = 0; i < images.length; i++) {
-        final source = File(images[i].path);
+        setState(() {});
 
-        final extension = images[i].path.toLowerCase().endsWith('.png')
-            ? 'png'
-            : 'jpg';
-
-        final destination =
-            '${workDirectory.path}/image_$i.$extension';
-
-        await source.copy(destination);
-        imageFiles.add(destination);
-
-        setState(() {
-          progress = 0.15 + ((i + 1) / images.length) * 0.25;
-          status = 'Подготавливаем изображение ${i + 1}/${images.length}';
-        });
-      }
-
-      final concatFile = File(
-        '${workDirectory.path}/images.txt',
-      );
-
-      final buffer = StringBuffer();
-
-      for (int i = 0; i < imageFiles.length; i++) {
-        final safePath = imageFiles[i].replaceAll("'", "'\\''");
-
-        buffer.writeln("file '$safePath'");
-        buffer.writeln(
-          'duration ${secondsPerImage.toStringAsFixed(4)}',
+        final description = await analyzeImage(
+          images[i],
+          i,
         );
+
+        images[i].description = description;
       }
 
-      final lastPath =
-          imageFiles.last.replaceAll("'", "'\\''");
+      // Затем AI выстраивает их в правильный порядок.
+      final order = await getAiOrder();
 
-      buffer.writeln("file '$lastPath'");
+      final sorted = <ProjectImage>[];
 
-      await concatFile.writeAsString(buffer.toString());
-
-      final outputDirectory =
-          await getApplicationDocumentsDirectory();
-
-      final outputPath =
-          '${outputDirectory.path}/LongVideo_${DateTime.now().millisecondsSinceEpoch}.mp4';
-
-      final size = getVideoSize();
-
-      final audioPath =
-          voicePath!.replaceAll("'", "'\\''");
-
-      final command = [
-        '-y',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        "'${concatFile.path}'",
-        '-i',
-        "'$audioPath'",
-        '-vf',
-        "scale=$size:force_original_aspect_ratio=decrease,"
-            "pad=$size:(ow-iw)/2:(oh-ih)/2",
-        '-r',
-        '$fps',
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-pix_fmt',
-        'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '192k',
-        '-shortest',
-        "'$outputPath'",
-      ].join(' ');
-
-      setState(() {
-        progress = 0.45;
-        status = 'Создаём видео...';
-      });
-
-      final session = await FFmpegKit.execute(command);
-      final returnCode = await session.getReturnCode();
-
-      if (!ReturnCode.isSuccess(returnCode)) {
-        final logs = await session.getOutput();
-        throw Exception(
-          'FFmpeg ошибка.\n${logs ?? 'Неизвестная ошибка'}',
-        );
+      for (final index in order) {
+        sorted.add(images[index]);
       }
 
       setState(() {
-        progress = 0.95;
-        status = 'Сохраняем видео...';
+        images = sorted;
       });
 
-      if (musicPath != null) {
-        final music = musicPath!.replaceAll("'", "'\\''");
-
-        final finalOutput =
-            '${outputDirectory.path}/LongVideo_Final_${DateTime.now().millisecondsSinceEpoch}.mp4';
-
-        final musicCommand = [
-          '-y',
-          '-i',
-          "'$outputPath'",
-          '-i',
-          "'$music'",
-          '-filter_complex',
-          '[1:a]volume=0.15[music];'
-              '[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[a]',
-          '-map',
-          '0:v',
-          '-map',
-          '[a]',
-          '-c:v',
-          'copy',
-          '-c:a',
-          'aac',
-          '-shortest',
-          "'$finalOutput'",
-        ].join(' ');
-
-        final musicSession =
-            await FFmpegKit.execute(musicCommand);
-
-        final musicCode =
-            await musicSession.getReturnCode();
-
-        if (ReturnCode.isSuccess(musicCode)) {
-          try {
-            await File(outputPath).delete();
-          } catch (_) {}
-
-          setState(() {
-            progress = 1;
-            status = 'Видео готово!';
-          });
-
-          showSuccess(finalOutput);
-          return;
-        }
-      }
-
-      setState(() {
-        progress = 1;
-        status = 'Видео готово!';
-      });
-
-      showSuccess(outputPath);
+      showMessage('Готово! AI отсортировал изображения.');
     } catch (e) {
-      setState(() {
-        status = 'Ошибка';
-      });
-
-      showError('$e');
+      showMessage(
+        'Ошибка AI:\n${e.toString()}',
+        duration: const Duration(seconds: 6),
+      );
     } finally {
       setState(() {
-        exporting = false;
+        aiSorting = false;
       });
     }
   }
 
-  void showError(String message) {
+  void moveImage(int oldIndex, int newIndex) {
+    setState(() {
+      if (newIndex > oldIndex) {
+        newIndex -= 1;
+      }
+
+      final item = images.removeAt(oldIndex);
+      images.insert(newIndex, item);
+    });
+  }
+
+  void removeImage(int index) {
+    setState(() {
+      images.removeAt(index);
+    });
+  }
+
+  void showMessage(
+    String message, {
+    Duration duration = const Duration(seconds: 3),
+  }) {
     if (!mounted) return;
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        duration: const Duration(seconds: 5),
+        duration: duration,
       ),
     );
   }
 
-  void showSuccess(String path) {
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      builder: (_) {
-        return AlertDialog(
-          title: const Text('Видео готово 🎉'),
-          content: Text(
-            'Файл сохранён:\n\n$path',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget sectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(
-        top: 18,
-        bottom: 10,
-      ),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
-
-  Widget actionButton({
-    required IconData icon,
+  Widget buildSettingCard({
     required String title,
-    required String subtitle,
-    required VoidCallback onPressed,
+    required Widget child,
   }) {
     return Card(
-      child: ListTile(
-        leading: CircleAvatar(
-          child: Icon(icon),
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            child,
+          ],
         ),
-        title: Text(title),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: exporting ? null : onPressed,
       ),
     );
   }
 
-  Widget settingDropdown<T>({
-    required String title,
-    required T value,
-    required List<T> items,
-    required ValueChanged<T?> onChanged,
-  }) {
-    return Expanded(
-      child: DropdownButtonFormField<T>(
-        value: value,
-        decoration: InputDecoration(
-          labelText: title,
-          border: const OutlineInputBorder(),
+  Widget buildImageCard(int index) {
+    final item = images[index];
+
+    return Card(
+      margin: const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 5,
+      ),
+      child: ListTile(
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: FutureBuilder<Uint8List>(
+            future: item.file.readAsBytes(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const SizedBox(
+                  width: 65,
+                  height: 65,
+                  child: Center(
+                    child: CircularProgressIndicator(),
+                  ),
+                );
+              }
+
+              return Image.memory(
+                snapshot.data!,
+                width: 65,
+                height: 65,
+                fit: BoxFit.cover,
+              );
+            },
+          ),
         ),
-        items: items
-            .map(
-              (item) => DropdownMenuItem<T>(
-                value: item,
-                child: Text('$item'),
-              ),
-            )
-            .toList(),
-        onChanged: exporting ? null : onChanged,
+        title: Text(
+          '${index + 1}. ${item.file.name}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          item.description.isEmpty
+              ? 'Описание ещё не создано'
+              : item.description,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: PopupMenuButton<String>(
+          onSelected: (value) {
+            if (value == 'up' && index > 0) {
+              moveImage(index, index - 1);
+            }
+
+            if (value == 'down' && index < images.length - 1) {
+              moveImage(index, index + 2);
+            }
+
+            if (value == 'delete') {
+              removeImage(index);
+            }
+          },
+          itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: 'up',
+              child: Text('⬆ Вверх'),
+            ),
+            PopupMenuItem(
+              value: 'down',
+              child: Text('⬇ Вниз'),
+            ),
+            PopupMenuItem(
+              value: 'delete',
+              child: Text('🗑 Удалить'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -494,210 +534,224 @@ class _EditorPageState extends State<EditorPage> {
             fontWeight: FontWeight.bold,
           ),
         ),
-        centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'Очистить',
+            onPressed: images.isEmpty ? null : clearImages,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              sectionTitle('Медиа'),
-
-              actionButton(
-                icon: Icons.photo_library,
-                title: 'Изображения',
-                subtitle: images.isEmpty
-                    ? 'Выбрать фотографии'
-                    : '${images.length} изображений выбрано',
-                onPressed: pickImages,
-              ),
-
-              actionButton(
-                icon: Icons.mic,
-                title: 'Озвучка',
-                subtitle: voicePath == null
-                    ? 'MP3, WAV, M4A и другие'
-                    : 'Озвучка добавлена',
-                onPressed: pickVoice,
-              ),
-
-              actionButton(
-                icon: Icons.music_note,
-                title: 'Фоновая музыка',
-                subtitle: musicPath == null
-                    ? 'Необязательно'
-                    : 'Музыка добавлена',
-                onPressed: pickMusic,
-              ),
-
-              sectionTitle('Видео'),
-
-              Row(
+        child: ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            // AI
+            buildSettingCard(
+              title: '🤖 AI-сортировка',
+              child: Column(
                 children: [
-                  settingDropdown<String>(
-                    title: 'Формат',
-                    value: aspectRatio,
-                    items: const [
-                      '16:9',
-                      '9:16',
-                      '1:1',
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          aspectRatio = value;
-                        });
-                      }
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  settingDropdown<String>(
-                    title: 'Разрешение',
-                    value: resolution,
-                    items: const [
-                      '720p',
-                      '1080p',
-                      '1440p',
-                      '4K',
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          resolution = value;
-                        });
-                      }
-                    },
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 12),
-
-              Row(
-                children: [
-                  settingDropdown<int>(
-                    title: 'FPS',
-                    value: fps,
-                    items: const [
-                      24,
-                      30,
-                      60,
-                    ],
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          fps = value;
-                        });
-                      }
-                    },
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Container(
-                      height: 56,
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: Colors.white24,
+                  TextField(
+                    controller: _apiKeyController,
+                    obscureText: !showApiKey,
+                    decoration: InputDecoration(
+                      labelText: 'OpenAI API key',
+                      hintText: 'sk-...',
+                      prefixIcon: const Icon(Icons.key),
+                      suffixIcon: IconButton(
+                        onPressed: () {
+                          setState(() {
+                            showApiKey = !showApiKey;
+                          });
+                        },
+                        icon: Icon(
+                          showApiKey
+                              ? Icons.visibility_off
+                              : Icons.visibility,
                         ),
-                        borderRadius: BorderRadius.circular(4),
                       ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        aspectRatio == '16:9'
-                            ? 'YouTube Long'
-                            : aspectRatio == '9:16'
-                                ? 'YouTube Shorts'
-                                : 'Квадрат',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                        ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _scriptController,
+                    minLines: 4,
+                    maxLines: 8,
+                    decoration: const InputDecoration(
+                      labelText: 'Сценарий (необязательно)',
+                      hintText:
+                          'Вставь сюда сценарий видео...',
+                      alignLabelWithHint: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: FilledButton.icon(
+                      onPressed: aiSorting ? null : aiSort,
+                      icon: aiSorting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child:
+                                  CircularProgressIndicator(
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.auto_awesome),
+                      label: Text(
+                        aiSorting
+                            ? 'AI анализирует...'
+                            : 'AI СОРТИРОВАТЬ',
                       ),
                     ),
                   ),
                 ],
               ),
+            ),
 
-              sectionTitle('Автомонтаж'),
-
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.auto_awesome),
-                          SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              'Автоматическая синхронизация',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          Icon(
-                            Icons.check_circle,
-                            color: Colors.green,
-                          ),
-                        ],
+            // Добавление изображений
+            buildSettingCard(
+              title: '🖼️ Изображения',
+              child: Column(
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          aiSorting ? null : pickImages,
+                      icon: const Icon(Icons.photo_library),
+                      label: const Text(
+                        'ДОБАВИТЬ ФОТОГРАФИИ',
                       ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'Фотографии автоматически '
-                        'распределяются по длине озвучки.',
-                        style: TextStyle(
-                          color: Colors.white70,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed:
+                              images.length < 2
+                                  ? null
+                                  : shuffleImages,
+                          icon:
+                              const Icon(Icons.shuffle),
+                          label: const Text('Random'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed:
+                              images.isEmpty
+                                  ? null
+                                  : () {
+                                      setState(() {
+                                        images.sort(
+                                          (a, b) => a
+                                              .file
+                                              .name
+                                              .compareTo(
+                                                b.file.name,
+                                              ),
+                                        );
+                                      });
+                                    },
+                          icon: const Icon(
+                            Icons.sort_by_alpha,
+                          ),
+                          label: const Text('По имени'),
                         ),
                       ),
                     ],
                   ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              if (exporting) ...[
-                LinearProgressIndicator(
-                  value: progress,
-                ),
-                const SizedBox(height: 10),
-                Text(status),
-                const SizedBox(height: 16),
-              ],
-
-              SizedBox(
-                width: double.infinity,
-                height: 56,
-                child: FilledButton.icon(
-                  onPressed: exporting ? null : exportVideo,
-                  icon: const Icon(Icons.movie_creation),
-                  label: Text(
-                    exporting
-                        ? 'Создание видео...'
-                        : 'СОЗДАТЬ ВИДЕО',
+                  const SizedBox(height: 10),
+                  Text(
+                    'Выбрано: ${images.length}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
+                ],
               ),
+            ),
 
-              const SizedBox(height: 12),
-
-              Center(
-                child: Text(
-                  status,
-                  style: const TextStyle(
-                    color: Colors.white54,
+            // Формат
+            buildSettingCard(
+              title: '📐 Формат',
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: '9:16',
+                    label: Text('9:16'),
                   ),
-                  textAlign: TextAlign.center,
-                ),
+                  ButtonSegment(
+                    value: '16:9',
+                    label: Text('16:9'),
+                  ),
+                  ButtonSegment(
+                    value: '1:1',
+                    label: Text('1:1'),
+                  ),
+                ],
+                selected: {aspectRatio},
+                onSelectionChanged: (value) {
+                  setState(() {
+                    aspectRatio = value.first;
+                  });
+                },
               ),
+            ),
 
-              const SizedBox(height: 30),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}                         
+            // Разрешение
+            buildSettingCard(
+              title: '🖥️ Разрешение',
+              child: DropdownButtonFormField<String>(
+                value: resolution,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: '720p',
+                    child: Text('720p'),
+                  ),
+                  DropdownMenuItem(
+                    value: '1080p',
+                    child: Text('1080p Full HD'),
+                  ),
+                  DropdownMenuItem(
+                    value: '1440p',
+                    child: Text('1440p'),
+                  ),
+                  DropdownMenuItem(
+                    value: '4K',
+                    child: Text('4K'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+
+                  setState(() {
+                    resolution = value;
+                  });
+                },
+              ),
+            ),
+
+            // FPS
+            buildSettingCard(
+              title: '🎞️ FPS',
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: '24',
+                    label: Text('24'),
+                  ),
+                  ButtonSegment(
+                    value: '30',
+ 
